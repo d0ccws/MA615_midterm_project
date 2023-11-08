@@ -1,0 +1,308 @@
+---
+title: "Midterm_EDA"
+author: "Wenshuo Cai"
+date: "2023-11-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(tidyverse)
+library(scales)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(stringr)
+```
+
+## Data Acquisition and Assessment
+
+```{r}
+#| echo: false
+# Load the data
+flood_data <- read.csv("DisasterDeclarationsSummaries.csv")
+fema_data<-read.csv("FemaWebDisasterSummaries.csv")
+# Convert date columns to Date objects
+flood_data$declarationDate <- as.Date(lubridate::ymd_hms(flood_data$declarationDate))
+flood_data$incidentBeginDate <- as.Date(lubridate::ymd_hms(flood_data$incidentBeginDate))
+flood_data$incidentEndDate <- as.Date(lubridate::ymd_hms(flood_data$incidentEndDate))
+
+# Filter the data for floods in 2020-2021
+flood_data_filtered <- flood_data %>%
+  filter(incidentType == "Flood", declarationDate >= as.Date('2020-01-01') & declarationDate <= as.Date('2021-12-31'))
+
+# Check for missing values
+summary(is.na(flood_data_filtered))
+
+# Remove duplicates
+flood_data_filtered <- distinct(flood_data_filtered)
+
+
+```
+## Data cleaning
+
+```{r}
+
+
+# Removing unneeded columns
+flood_data_filtered <- flood_data_filtered %>%
+  select(-c(femaDeclarationString, declarationType, tribalRequest))
+
+# Extracting County and Reservation information
+flood_data_filtered <- flood_data_filtered %>%
+  mutate(CountyArea = ifelse(str_detect(designatedArea, "County"), str_remove(designatedArea, "\\(County\\)"), NA),
+         ReservationArea = ifelse(str_detect(designatedArea, "Indian Reservation"), designatedArea, NA)) %>%
+  select(-designatedArea)
+
+# Moving new columns to the appropriate place
+flood_data_filtered <- flood_data_filtered %>%
+  relocate(CountyArea, .after = state) %>%
+  relocate(ReservationArea, .after = CountyArea)
+
+# Creating year and month for begin and end dates
+flood_data_filtered <- flood_data_filtered %>%
+  mutate(BeginYear = year(incidentBeginDate),
+         BeginMonth = month(incidentBeginDate),
+         EndYear = year(incidentEndDate),
+         EndMonth = month(incidentEndDate))
+
+# Calculating the flood duration in days
+flood_data_filtered <- flood_data_filtered %>%
+  mutate(FloodDuration = as.numeric(incidentEndDate - incidentBeginDate) + 1)
+
+# Converting to numeric types for year and month columns if needed
+flood_data_filtered$BeginYear <- as.numeric(flood_data_filtered$BeginYear)
+flood_data_filtered$BeginMonth <- as.numeric(flood_data_filtered$BeginMonth)
+flood_data_filtered$EndYear <- as.numeric(flood_data_filtered$EndYear)
+flood_data_filtered$EndMonth <- as.numeric(flood_data_filtered$EndMonth)
+
+
+
+# Print the column names of the data frame
+#print(colnames(fema_data))
+
+# Clean fema_data
+fema_data <- fema_data |>
+    semi_join(flood_data_filtered, by = "disasterNumber")
+fema_data <- fema_data |>
+    select(disasterNumber, totalNumberIaApproved, totalAmountIhpApproved, totalAmountHaApproved, totalAmountOnaApproved, totalObligatedAmountHmgp)
+
+flood_data_cleaned<- flood_data_filtered |>
+    left_join(fema_data, by = "disasterNumber")
+
+# Define the state dictionary as a named vector
+state_dict <- c(
+  WA = "Washington",
+  VA = "Virginia",
+  NH = "New Hampshire",
+  VT = "Vermont",
+  AZ = "Arizona",
+  TN = "Tennessee",
+  LA = "Louisiana",
+  WV = "West Virginia",
+  HI = "Hawaii",
+  KY = "Kentucky",
+  PR = "Puerto Rico",
+  ND = "North Dakota",
+  OR = "Oregon",
+  WI = "Wisconsin"
+)
+
+# Replace state abbreviations with full names in the 'state' column of the 'flood' data frame
+flood_data_cleaned$state <- sapply(flood_data_cleaned$state, function(abbrev) {
+  if (abbrev %in% names(state_dict)) {
+    return(state_dict[[abbrev]])
+  } else {
+    return(abbrev)
+  }
+})
+
+# Remove "(County)" from the 'County' column and trim whitespace
+flood_data_cleaned$County <- gsub(" \\(County\\)", "", flood_data_cleaned$County)
+flood_data_cleaned$County <- trimws(flood_data_cleaned$County)
+
+# Remove object 'FA' from the environment
+rm(fema_data)
+
+# Export the cleaned data to a new CSV file
+write.csv(flood_data_filtered, "flood_data_cleaned.csv", row.names = FALSE)
+
+```
+
+
+---
+
+## Strom Data assessment
+
+```{r}
+storm_d20 <- read.csv("StormEvents_details-ftp_v1.0_d2020_c20230927.csv", header = T)
+storm_d21 <- read.csv("StormEvents_details-ftp_v1.0_d2021_c20231017.csv", header = T)
+storm_f20 <- read.csv("StormEvents_fatalities-ftp_v1.0_d2020_c20230927.csv",
+                           header = T)
+storm_f21 <- read.csv("StormEvents_fatalities-ftp_v1.0_d2021_c20231017.csv",
+                           header = T)
+storm_l20 <- read.csv("StormEvents_locations-ftp_v1.0_d2020_c20230927.csv",
+                           header = T)
+storm_l21 <- read.csv("StormEvents_locations-ftp_v1.0_d2021_c20231017.csv",
+                           header = T)
+
+
+
+
+# Cleaning and selecting relevant columns from the details datasets
+Details_2020 <- storm_d20 %>%
+    select(ID = EVENT_ID, StartYM = BEGIN_YEARMONTH, StartD = BEGIN_DAY, 
+           EndYM = END_YEARMONTH, EndD = END_DAY, Region = STATE, Cause = FLOOD_CAUSE)
+
+Fatalities_2020 <- storm_f20 %>%
+    select(ID = EVENT_ID, Age = FATALITY_AGE, Gender = FATALITY_SEX) %>%
+    mutate(FatalityCount = 1)
+
+Details_2021 <- storm_d21 %>%
+    select(ID = EVENT_ID, StartYM = BEGIN_YEARMONTH, StartD = BEGIN_DAY, 
+           EndYM = END_YEARMONTH, EndD = END_DAY, Region = STATE, Cause = FLOOD_CAUSE)
+
+Fatalities_2021 <- storm_f21 %>%
+    select(ID = EVENT_ID, Age = FATALITY_AGE, Gender = FATALITY_SEX) %>%
+    mutate(FatalityCount = 1)
+
+# Merging details with fatalities data
+Combined_2020 <- Details_2020 %>%
+    left_join(Fatalities_2020, by = "ID")
+
+Combined_2021 <- Details_2021 %>%
+    left_join(Fatalities_2021, by = "ID")
+
+# Create a function to calculate duration
+calculate_duration <- function(startYM, startD, endYM, endD) {
+    startDate <- as.Date(paste(substr(startYM, 1, 4), substr(startYM, 5, 6), startD, sep = "-"))
+    endDate <- as.Date(paste(substr(endYM, 1, 4), substr(endYM, 5, 6), endD, sep = "-"))
+    return(as.integer(endDate - startDate) + 1)
+}
+
+# Apply the function to calculate the duration of the storm events
+Combined_2020 <- Combined_2020 %>%
+    mutate(Duration = calculate_duration(StartYM, StartD, EndYM, EndD))
+
+Combined_2021 <- Combined_2021 %>%
+    mutate(Duration = calculate_duration(StartYM, StartD, EndYM, EndD))
+
+# Determine if the event is related to flooding
+Combined_2020 <- Combined_2020 %>%
+    mutate(IsFlood = as.integer(!is.na(Cause) & Cause != ""))
+
+Combined_2021 <- Combined_2021 %>%
+    mutate(IsFlood = as.integer(!is.na(Cause) & Cause != ""))
+
+# Organize the Combined_2020 dataset
+OrganizedStorm_2020 <- Combined_2020 %>%
+  select(
+    EventID = ID, 
+    State = Region, 
+    YearStart = StartYM, 
+    MonthStart = StartD, 
+    DayStart = StartD, 
+    YearEnd = EndYM, 
+    MonthEnd = EndD, 
+    DayEnd = EndD, 
+    EventDuration = Duration, 
+    FloodEvent = IsFlood, 
+    FloodCause = Cause, 
+    FatalityFlag = FatalityCount, 
+    FatalityAge = Age, 
+    FatalityGender = Gender
+  )
+
+# Organize the Combined_2021 dataset
+OrganizedStorm_2021 <- Combined_2021 %>%
+  select(
+    EventID = ID, 
+    State = Region, 
+    YearStart = StartYM, 
+    MonthStart = StartD, 
+    DayStart = StartD, 
+    YearEnd = EndYM, 
+    MonthEnd = EndD, 
+    DayEnd = EndD, 
+    EventDuration = Duration, 
+    FloodEvent = IsFlood, 
+    FloodCause = Cause, 
+    FatalityFlag = FatalityCount, 
+    FatalityAge = Age, 
+    FatalityGender = Gender
+  )
+write.csv(OrganizedStorm_2020, "OrganizedStorm_2020.csv", row.names = FALSE)
+write.csv(OrganizedStorm_2021, "OrganizedStorm_2021.csv", row.names = FALSE)
+```
+
+---
+## EDA
+
+# use plots to understand the impact and patterns of floods
+```{r}
+flood_data <- read.csv("flood_data_cleaned.csv")
+flood_data$declarationDate <- as.Date(flood_data$declarationDate, format="%Y-%m-%d")
+flood_data$YearMonth <- format(flood_data$declarationDate, "%Y-%m")
+# Aggregate the data by YearMonth
+floods_by_month <- flood_data %>%
+  group_by(YearMonth) %>%
+  summarise(Count = n())
+
+# Plot
+ggplot(floods_by_month, aes(x=YearMonth, y=Count)) +
+  geom_line(group=1) +
+  geom_point() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title="Number of Flood Events by Month and Year", x="Year and Month", y="Number of Flood Events")
+```
+The line plot shows the number of flood events by month and year. It appears there are fluctuations in the number of flood events over time, with some months experiencing more flood events than others. This kind of pattern can be influenced by seasonal weather patterns, such as heavy rainfall seasons or melting snow.
+
+```{r}
+# Plot the distribution of flood durations
+ggplot(flood_data, aes(x=FloodDuration)) +
+  geom_histogram(bins=30, fill="blue", color="black") +
+  labs(title="Distribution of Flood Durations", x="Duration of Flood (Days)", y="Frequency")
+
+```
+The histogram illustrates the distribution of flood durations, measured in days. We can observe that the majority of floods last less than 10 days, with a noticeable peak around that duration. There are fewer instances of longer-lasting floods, suggesting that while short-term floods are common, prolonged flooding events are less frequent.
+
+```{r}
+# Count the number of flood events by state
+floods_by_state <- table(flood_data$state)
+
+# Plot
+barplot(floods_by_state, las=2, col="skyblue", main="Number of Flood Events by State", xlab="State", ylab="Number of Flood Events")
+
+```
+
+The bar plot shows the number of flood events by state. It seems that certain states have a higher number of recorded flood events, which may indicate a greater vulnerability to flooding or could be related to the size and geography of the state.
+
+```{r}
+# Prepare data for the assistance programs declared
+assistance_programs <- c("ihProgramDeclared", "iaProgramDeclared", "paProgramDeclared", "hmProgramDeclared")
+assistance_data <- colSums(flood_data[,assistance_programs])
+
+# Sort assistance_data in ascending order for horizontal bar plot
+assistance_data_sorted <- sort(assistance_data, decreasing = TRUE)
+
+# Convert to data frame for ggplot
+assistance_data_df <- data.frame(Program = names(assistance_data_sorted), Declarations = assistance_data_sorted)
+
+# Plot the declaration of assistance programs
+ggplot(assistance_data_df, aes(x = Program, y = Declarations)) +
+  geom_bar(stat = "identity", fill = "#008080") +
+  coord_flip() +  # Flip coordinates for horizontal bar plot
+  labs(title = "Assistance Programs Declared During Floods", x = "Number of Declarations", y = "Assistance Programs") +
+  theme_minimal() +
+  theme(panel.grid.major.x = element_line(colour = "gray90"))
+
+# Display the plot
+ggsave("Assistance_Programs_Declared_During_Floods.png", width = 10, height = 6, dpi = 300)
+```
+
+The horizontal bar plot shows the number of times different assistance programs have been declared during floods. The paProgramDeclared (Public Assistance) and hmProgramDeclared (Hazard Mitigation) have been declared the most frequently, suggesting that floods often lead to public infrastructure damage and necessitate long-term risk reduction measures. The iaProgramDeclared (Individual Assistance) has not been declared for any of the events in this dataset, which might indicate that the floods did not meet the threshold for this type of assistance or that the data on individual assistance is not captured.
+
+
+
